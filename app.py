@@ -11,6 +11,7 @@ from excel_output import build_excel
 from research_agent import ResearchError, research_school
 from school_input import parse_csv_schools, parse_pasted_schools
 from version import APP_VERSION
+from school_registry import RANKED_SCHOOL_COUNT, REGISTRY_SCHOOL_COUNT
 
 
 load_dotenv()
@@ -59,7 +60,7 @@ st.set_page_config(
 )
 
 st.title("Peer Scholars Search Tool")
-st.caption(f"Version {APP_VERSION}")
+st.caption(f"Version {APP_VERSION} · {RANKED_SCHOOL_COUNT} QS-ranked schools / {REGISTRY_SCHOOL_COUNT} built-in school records")
 st.caption(
     "Define the peer-scholar search, upload or paste a school list, and download "
     "one standardized Excel workbook."
@@ -114,7 +115,7 @@ with st.form("research_form"):
         max_schools = st.number_input(
             "Maximum schools for this run",
             min_value=1,
-            max_value=100,
+            max_value=150,
             value=3,
             help="Start with 1-3 schools while validating the workflow.",
         )

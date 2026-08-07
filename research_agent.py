@@ -4,7 +4,6 @@ import json
 import os
 import re
 from typing import Any
-from urllib.parse import urlparse
 
 from openai import OpenAI
 
@@ -19,7 +18,7 @@ from schemas import (
     SUPPLEMENTAL_RESULT_SCHEMA,
 )
 from school_registry import resolve_known_school
-from utils import discipline_labels
+from utils import discipline_labels, safe_search_domains
 
 
 class ResearchError(RuntimeError):
@@ -43,17 +42,7 @@ def _parse_json_response(response: Any, *, stage: str) -> dict[str, Any]:
         raise ResearchError(f"{stage} did not return valid JSON.") from exc
 
 
-def _domain_filters(roster_url: str) -> list[str]:
-    hostname = (urlparse(roster_url).hostname or "").lower()
-    if not hostname:
-        return []
-    domains = [hostname]
-    labels = hostname.split(".")
-    if len(labels) >= 2:
-        root = ".".join(labels[-2:])
-        if root not in domains:
-            domains.append(root)
-    return domains
+_domain_filters = safe_search_domains
 
 
 
@@ -65,6 +54,7 @@ def discover_current_roster(
     discipline: str,
     discipline_variants: list[str],
     roster_url: str = "",
+    official_domains: tuple[str, ...] | list[str] = (),
 ) -> dict[str, Any]:
     exact_url_instruction = (
         f"Use this exact official roster URL: {roster_url}"
@@ -93,10 +83,12 @@ return incomplete.
         tools=[{
             "type": "web_search",
             "filters": {
+                **({"allowed_domains": _domain_filters(roster_url, official_domains)}
+                   if _domain_filters(roster_url, official_domains) else {}),
                 "blocked_domains": [
                     "wikipedia.org", "linkedin.com", "signalhire.com",
                     "researchgate.net",
-                ]
+                ],
             },
         }],
         tool_choice="required",
@@ -130,6 +122,7 @@ def verify_roster(
     included_rank: str,
     exclusions: list[str],
     roster: dict[str, Any],
+    official_domains: tuple[str, ...] | list[str] = (),
 ) -> dict[str, Any]:
     roster_members = roster["roster_members"]
     closed_roster = [
@@ -156,7 +149,7 @@ Classify every supplied name exactly once. Do not add any other name.
 Use official university/school sources only in this stage.
 Standardize the discipline output to exactly: {discipline}
 """
-    allowed_domains = _domain_filters(roster["roster_source"])
+    allowed_domains = _domain_filters(roster["roster_source"], official_domains)
     web_tool: dict[str, Any] = {
         "type": "web_search",
         "filters": {
@@ -317,17 +310,23 @@ def research_school(
     if not os.getenv("OPENAI_API_KEY"):
         raise ResearchError("OPENAI_API_KEY is not configured.")
     if not current_only:
-        raise ResearchError("Version 0.4 currently supports current faculty only.")
+        raise ResearchError("Version 0.5 currently supports current faculty only.")
     if not official_only:
         raise ResearchError("Official sources must control current eligibility.")
 
     client = OpenAI()
     selected_model = model or os.getenv("OPENAI_MODEL", "gpt-5.6")
     configured = resolve_known_school(school) if not roster_url else None
-    preferred_roster_url = roster_url or (configured.roster_url if configured else "")
+    labels = discipline_labels(discipline, discipline_variants)
+    configured_domains = configured.official_domains if configured else ()
+    preferred_roster_url = roster_url
+    if not preferred_roster_url and configured and configured.roster_url_supports(labels):
+        preferred_roster_url = configured.roster_url
+
     resolution_method = (
         "user-supplied roster URL" if roster_url
-        else "built-in school registry" if configured
+        else "built-in tested roster URL" if preferred_roster_url
+        else "registry-guided official-domain discovery" if configured
         else "automatic web discovery"
     )
 
@@ -338,8 +337,11 @@ def research_school(
         discipline=discipline,
         discipline_variants=discipline_variants,
         roster_url=preferred_roster_url,
+        official_domains=configured_domains,
     )
     if roster["roster_status"] == "incomplete" and configured is not None and not roster_url:
+        # Retry without a fixed URL but stay inside the school's explicit official
+        # domains. This is especially important for international institutions.
         roster = discover_current_roster(
             client=client,
             model=selected_model,
@@ -347,8 +349,24 @@ def research_school(
             discipline=discipline,
             discipline_variants=discipline_variants,
             roster_url="",
+            official_domains=configured_domains,
         )
-        resolution_method = "automatic web discovery after registry fallback"
+        resolution_method = "registry-guided domain discovery after URL fallback"
+
+        # Last resort: if the configured domain set itself is stale, allow the
+        # model to rediscover an official source. The strict roster protocol still
+        # forbids using non-current research/news pages as the roster.
+        if roster["roster_status"] == "incomplete":
+            roster = discover_current_roster(
+                client=client,
+                model=selected_model,
+                school=school,
+                discipline=discipline,
+                discipline_variants=discipline_variants,
+                roster_url="",
+                official_domains=(),
+            )
+            resolution_method = "automatic official-source discovery after domain fallback"
 
     if roster["roster_status"] == "incomplete":
         return {
@@ -372,6 +390,7 @@ def research_school(
         included_rank=included_rank,
         exclusions=exclusions,
         roster=roster,
+        official_domains=configured_domains,
     )
     result["school_note"] = (
         f"Roster source selected by {resolution_method}. {result['school_note']}"

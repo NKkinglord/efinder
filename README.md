@@ -184,3 +184,84 @@ format remain available as advanced overrides, but they are not required.
 - Wikipedia, LinkedIn, commercial people-search sites, and ResearchGate are not accepted as supplemental evidence.
 
 Because personal-site enrichment is a separate web-search stage, enabling it can add one additional API call per school that has included candidates.
+
+## v0.4.2: flexible school-name matching
+
+Known schools no longer require an exact alias. Harmless wording differences such as
+`Duke University (Fuqua School of Business)`, `Duke University (Fuqua)`, and
+`Fuqua School of Business` resolve to the same tested current Fuqua directory.
+The matcher is conservative: if a name could refer to more than one institution,
+it does not guess and instead uses automatic web discovery.
+
+
+## v0.4.3 strong school aliases
+
+The school registry now supports distinctive "strong aliases."
+
+For Duke University (Fuqua), either standalone word below is sufficient:
+
+- `duke`
+- `fuqua`
+
+Therefore inputs such as these all resolve to the tested Fuqua roster URL:
+
+```text
+Duke
+Duke University (Fuqua School of Business)
+current accounting faculty at Duke
+Fuqua accounting
+peer list - FUQUA - current faculty
+```
+
+Strong aliases use normalized whole words, so unrelated strings such as
+`Dukes County` do not match `duke`.
+
+Later releases expand this mechanism to common abbreviations within the
+configured school universe, with longest-match-wins disambiguation.
+
+## v0.4.4 common school aliases
+
+The 23-school registry now accepts common shorthand directly.
+
+Examples:
+
+- USC / Marshall -> University of Southern California (Marshall)
+- UT / UT Austin / McCombs -> University of Texas at Austin (McCombs)
+- UW / Foster -> University of Washington (Foster)
+- UCLA / Anderson
+- NYU / Stern
+- MIT / Sloan
+- UNC / Kenan-Flagler
+- IU / Kelley
+- UIUC / Gies
+- UF / Warrington
+- UGA / Terry
+- PSU / Smeal
+- WashU / WUSTL / Olin
+- UMich / Michigan / Ross
+- UCB / Berkeley / Haas
+
+These abbreviations are interpreted inside the application's configured school
+universe. If the registry is later expanded to include another school using the
+same abbreviation, the alias should be revised to avoid ambiguity.
+
+
+## v0.5.0 global top-100 registry
+
+The built-in resolver now covers the QS Global MBA Rankings 2026 rank-through-99
+cohort. Because the cutoff has ties, that is 101 ranked schools. The original
+University of Illinois (Gies) and University of Georgia (Terry) records are also
+retained, for 103 built-in school records total.
+
+International schools are first-class registry entries. Each known school can
+carry explicit official domains such as `cam.ac.uk`, `nus.edu.sg`, `hkust.edu.hk`,
+`iimb.ac.in`, `uct.ac.za`, `uq.edu.au`, and `qu.edu.qa`. The search code no longer
+assumes that an official university domain ends in `.edu`.
+
+For schools that have no tested roster URL, the app automatically searches only
+inside that school's configured official domains first. If the domain configuration
+is stale, it can perform one final strict official-source discovery pass.
+
+Saved roster URLs can now be discipline-specific. For example, an Accounting page
+is used for Accounting/Accountancy, but not incorrectly reused for Operations or
+Finance.
