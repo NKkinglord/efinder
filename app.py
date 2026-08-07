@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import inspect
 import re
 
 import streamlit as st
@@ -9,9 +10,21 @@ from dotenv import load_dotenv
 from excel_output import build_excel
 from research_agent import ResearchError, research_school
 from school_input import parse_csv_schools, parse_pasted_schools
+from version import APP_VERSION
 
 
 load_dotenv()
+
+# Fail fast if files from different releases were mixed together.
+_required_params = {"discipline_variants", "allow_personal_websites"}
+_actual_params = set(inspect.signature(research_school).parameters)
+_missing_params = _required_params - _actual_params
+if _missing_params:
+    raise RuntimeError(
+        "Mixed application versions detected. research_agent.py is older than app.py. "
+        "Replace the entire project folder from the same release. Missing parameters: "
+        + ", ".join(sorted(_missing_params))
+    )
 
 DEFAULT_EXCLUSIONS = [
     "Practice / Professor of Practice",
@@ -46,6 +59,7 @@ st.set_page_config(
 )
 
 st.title("Peer Scholars Search Tool")
+st.caption(f"Version {APP_VERSION}")
 st.caption(
     "Define the peer-scholar search, upload or paste a school list, and download "
     "one standardized Excel workbook."
