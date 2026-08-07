@@ -172,3 +172,15 @@ tries automatic discovery once before marking the school incomplete.
 
 An optional `Official Roster URL` CSV column and the `School | URL` pasted
 format remain available as advanced overrides, but they are not required.
+
+
+## Version 0.4 changes
+
+- Renamed the interface to **Peer Scholars Search Tool**.
+- Added **Variants of name** under Discipline. Enter comma-separated equivalents, for example `Accountancy` for Accounting or `Decision and Operations` for Operations Management.
+- Current eligibility remains official-source-only.
+- Added optional **personal academic website enrichment** for missing Ph.D. year, first-year-of-rank, and CV link.
+- Personal websites cannot add candidates, change current rank, or override official current affiliation.
+- Wikipedia, LinkedIn, commercial people-search sites, and ResearchGate are not accepted as supplemental evidence.
+
+Because personal-site enrichment is a separate web-search stage, enabling it can add one additional API call per school that has included candidates.

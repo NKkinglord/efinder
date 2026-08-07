@@ -1,6 +1,7 @@
 from excel_output import build_excel
 from school_input import parse_pasted_schools
 from school_registry import resolve_known_school
+from utils import discipline_labels
 
 
 def main():
@@ -18,6 +19,9 @@ def main():
     assert duke.roster_url == "https://www.fuqua.duke.edu/faculty-research/directory/all"
     assert resolve_known_school("Duke University (Fuqua)") == duke
     assert resolve_known_school("Unknown Example School") is None
+
+    labels = discipline_labels("Accounting", ["Accountancy", " accounting ", ""])
+    assert labels == ["Accounting", "Accountancy"]
 
     sample = {
         "school_name": "Duke University (Fuqua)",
@@ -44,7 +48,11 @@ def main():
     }
     output = build_excel(
         results=[sample],
-        configuration={"Discipline": "Accounting"},
+        configuration={
+            "Discipline": "Accounting",
+            "Variants of name": ["Accountancy"],
+            "Personal academic website enrichment": True,
+        },
     )
     assert len(output) > 1000
     print("Smoke test passed.")

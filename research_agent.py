@@ -8,9 +8,18 @@ from urllib.parse import urlparse
 
 from openai import OpenAI
 
-from protocol import ROSTER_SYSTEM_PROTOCOL, VERIFICATION_SYSTEM_PROTOCOL
-from schemas import ROSTER_DISCOVERY_SCHEMA, SCHOOL_RESULT_SCHEMA
+from protocol import (
+    ROSTER_SYSTEM_PROTOCOL,
+    SUPPLEMENTAL_SYSTEM_PROTOCOL,
+    VERIFICATION_SYSTEM_PROTOCOL,
+)
+from schemas import (
+    ROSTER_DISCOVERY_SCHEMA,
+    SCHOOL_RESULT_SCHEMA,
+    SUPPLEMENTAL_RESULT_SCHEMA,
+)
 from school_registry import resolve_known_school
+from utils import discipline_labels
 
 
 class ResearchError(RuntimeError):
@@ -26,10 +35,8 @@ def _parse_json_response(response: Any, *, stage: str) -> dict[str, Any]:
     if response.status == "incomplete":
         reason = getattr(response.incomplete_details, "reason", "unknown")
         raise ResearchError(f"{stage} response incomplete: {reason}")
-
     if not response.output_text:
         raise ResearchError(f"{stage} returned no output text.")
-
     try:
         return json.loads(response.output_text)
     except json.JSONDecodeError as exc:
@@ -40,7 +47,6 @@ def _domain_filters(roster_url: str) -> list[str]:
     hostname = (urlparse(roster_url).hostname or "").lower()
     if not hostname:
         return []
-
     domains = [hostname]
     labels = hostname.split(".")
     if len(labels) >= 2:
@@ -50,12 +56,14 @@ def _domain_filters(roster_url: str) -> list[str]:
     return domains
 
 
+
 def discover_current_roster(
     *,
     client: OpenAI,
     model: str,
     school: str,
     discipline: str,
+    discipline_variants: list[str],
     roster_url: str = "",
 ) -> dict[str, Any]:
     exact_url_instruction = (
@@ -63,64 +71,52 @@ def discover_current_roster(
         if roster_url
         else "Locate the exact current official discipline faculty roster URL."
     )
-
+    labels = discipline_labels(discipline, discipline_variants)
     request = f"""
 School: {school}
-Discipline/area: {discipline}
+Primary discipline/area: {discipline}
+Accepted discipline-name labels: {json.dumps(labels, ensure_ascii=False)}
 
 {exact_url_instruction}
 
-Extract only names visibly presented as current faculty on this one official
-source. A full-school directory is acceptable only when it visibly labels each
-selected person with the requested discipline/academic area. Do not use Ph.D.
-pages, research pages, publication pages, award pages, news pages, archived
-pages, or independently discovered profiles to add names.
+Treat the accepted labels as equivalent names for roster discovery. Extract
+only names visibly presented as current faculty on this one official source
+under one of those labels. A full-school directory is acceptable only when it
+visibly labels each selected person with one of the accepted labels.
 
 If the source does not expose both names and discipline labels to the web tool,
 return incomplete.
 """
-
     response = client.responses.create(
         model=model,
         reasoning={"effort": "high"},
-        tools=[
-            {
-                "type": "web_search",
-                "filters": {
-                    "blocked_domains": [
-                        "wikipedia.org",
-                        "linkedin.com",
-                        "signalhire.com",
-                        "researchgate.net",
-                    ]
-                },
-            }
-        ],
+        tools=[{
+            "type": "web_search",
+            "filters": {
+                "blocked_domains": [
+                    "wikipedia.org", "linkedin.com", "signalhire.com",
+                    "researchgate.net",
+                ]
+            },
+        }],
         tool_choice="required",
         include=["web_search_call.action.sources"],
         input=[
             {"role": "system", "content": ROSTER_SYSTEM_PROTOCOL},
             {"role": "user", "content": request},
         ],
-        text={
-            "format": {
-                "type": "json_schema",
-                "name": "current_faculty_roster",
-                "strict": True,
-                "schema": ROSTER_DISCOVERY_SCHEMA,
-            }
-        },
+        text={"format": {
+            "type": "json_schema",
+            "name": "current_faculty_roster",
+            "strict": True,
+            "schema": ROSTER_DISCOVERY_SCHEMA,
+        }},
         max_output_tokens=8000,
     )
-
     roster = _parse_json_response(response, stage="Roster discovery")
     _validate_roster(roster, requested_school=school)
-
     if roster_url and roster["roster_source"].rstrip("/") != roster_url.rstrip("/"):
-        raise ResearchError(
-            f"{school}: roster discovery did not use the supplied roster URL."
-        )
-
+        raise ResearchError(f"{school}: roster discovery did not use the supplied roster URL.")
     return roster
 
 
@@ -130,6 +126,7 @@ def verify_roster(
     model: str,
     school: str,
     discipline: str,
+    discipline_variants: list[str],
     included_rank: str,
     exclusions: list[str],
     roster: dict[str, Any],
@@ -143,10 +140,11 @@ def verify_roster(
         }
         for member in roster_members
     ]
-
+    labels = discipline_labels(discipline, discipline_variants)
     request = f"""
 School: {school}
-Discipline/area: {discipline}
+Primary discipline/area: {discipline}
+Accepted discipline-name labels: {json.dumps(labels, ensure_ascii=False)}
 Included rank: {included_rank}
 Excluded appointment types/titles: {", ".join(exclusions) if exclusions else "None"}
 Exact current roster source: {roster["roster_source"]}
@@ -155,17 +153,15 @@ CLOSED CURRENT ROSTER:
 {json.dumps(closed_roster, ensure_ascii=False, indent=2)}
 
 Classify every supplied name exactly once. Do not add any other name.
-Use official sources only.
+Use official university/school sources only in this stage.
+Standardize the discipline output to exactly: {discipline}
 """
-
     allowed_domains = _domain_filters(roster["roster_source"])
     web_tool: dict[str, Any] = {
         "type": "web_search",
         "filters": {
             "blocked_domains": [
-                "wikipedia.org",
-                "linkedin.com",
-                "signalhire.com",
+                "wikipedia.org", "linkedin.com", "signalhire.com",
                 "researchgate.net",
             ]
         },
@@ -183,17 +179,14 @@ Use official sources only.
             {"role": "system", "content": VERIFICATION_SYSTEM_PROTOCOL},
             {"role": "user", "content": request},
         ],
-        text={
-            "format": {
-                "type": "json_schema",
-                "name": "verified_faculty_classifications",
-                "strict": True,
-                "schema": SCHOOL_RESULT_SCHEMA,
-            }
-        },
+        text={"format": {
+            "type": "json_schema",
+            "name": "verified_faculty_classifications",
+            "strict": True,
+            "schema": SCHOOL_RESULT_SCHEMA,
+        }},
         max_output_tokens=18000,
     )
-
     result = _parse_json_response(response, stage="Candidate verification")
     result["roster_source"] = roster["roster_source"]
     _validate_school_result(
@@ -204,35 +197,137 @@ Use official sources only.
     return result
 
 
+def enrich_from_personal_websites(
+    *,
+    client: OpenAI,
+    model: str,
+    school: str,
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    included = [
+        person for person in result["faculty_classifications"]
+        if person["decision"] == "included"
+    ]
+    if not included:
+        return result
+
+    closed_candidates = [
+        {
+            "candidate_name": p["candidate_name"],
+            "current_rank": p["current_rank"],
+            "official_phd_year": p["phd_year"],
+            "official_first_year_of_rank": p["first_year_of_rank"],
+            "official_profile_or_cv_url": p["profile_or_cv_url"],
+        }
+        for p in included
+    ]
+    request = f"""
+School: {school}
+
+CLOSED LIST OF ALREADY-VERIFIED CANDIDATES:
+{json.dumps(closed_candidates, ensure_ascii=False, indent=2)}
+
+Search personal academic websites and personal CVs for supplemental biographical
+information. Do not change eligibility/current rank. Return every supplied name
+exactly once, even when no supplemental information is found.
+"""
+    response = client.responses.create(
+        model=model,
+        reasoning={"effort": "medium"},
+        tools=[{
+            "type": "web_search",
+            "filters": {
+                "blocked_domains": [
+                    "wikipedia.org", "linkedin.com", "signalhire.com",
+                    "researchgate.net", "zoominfo.com", "rocketreach.co",
+                ]
+            },
+        }],
+        tool_choice="required",
+        include=["web_search_call.action.sources"],
+        input=[
+            {"role": "system", "content": SUPPLEMENTAL_SYSTEM_PROTOCOL},
+            {"role": "user", "content": request},
+        ],
+        text={"format": {
+            "type": "json_schema",
+            "name": "supplemental_candidate_data",
+            "strict": True,
+            "schema": SUPPLEMENTAL_RESULT_SCHEMA,
+        }},
+        max_output_tokens=10000,
+    )
+    supplemental = _parse_json_response(response, stage="Personal-site enrichment")
+    _validate_supplemental(supplemental, included)
+    supplemental_by_name = {
+        _normalized_name(x["candidate_name"]): x
+        for x in supplemental["supplemental_records"]
+    }
+
+    for person in result["faculty_classifications"]:
+        if person["decision"] != "included":
+            continue
+        extra = supplemental_by_name[_normalized_name(person["candidate_name"])]
+        filled = []
+        if person["phd_year"] is None and extra["phd_year"] is not None:
+            person["phd_year"] = extra["phd_year"]
+            filled.append("Ph.D. year")
+        if person["first_year_of_rank"] is None and extra["first_year_of_rank"] is not None:
+            person["first_year_of_rank"] = extra["first_year_of_rank"]
+            person["first_year_basis"] = extra["first_year_basis"]
+            if person["confidence"] == "high":
+                person["confidence"] = "medium"
+            filled.append("first year of rank")
+        if extra["cv_url"]:
+            # Prefer a discovered personal CV/academic CV page over a generic
+            # profile link, while keeping the official current_source untouched.
+            person["profile_or_cv_url"] = extra["cv_url"]
+            filled.append("CV link")
+        for url in extra["evidence_urls"]:
+            if url and url not in person["evidence_urls"]:
+                person["evidence_urls"].append(url)
+        if filled:
+            suffix = (
+                "Supplemental personal academic source filled: "
+                + ", ".join(filled)
+                + "."
+            )
+            person["notes"] = f"{person['notes']} {suffix} {extra['notes']}".strip()
+
+    result["school_note"] = (
+        f"{result['school_note']} Personal academic websites were searched only "
+        "for supplemental biographical fields; official sources controlled eligibility."
+    ).strip()
+    return result
+
+
 def research_school(
     *,
     school: str,
     discipline: str,
+    discipline_variants: list[str],
     included_rank: str,
     exclusions: list[str],
     current_only: bool = True,
     official_only: bool = True,
+    allow_personal_websites: bool = True,
     model: str | None = None,
     roster_url: str = "",
 ) -> dict[str, Any]:
     if not os.getenv("OPENAI_API_KEY"):
         raise ResearchError("OPENAI_API_KEY is not configured.")
-
     if not current_only:
-        raise ResearchError("Version 0.2 currently supports current faculty only.")
+        raise ResearchError("Version 0.4 currently supports current faculty only.")
     if not official_only:
-        raise ResearchError("Version 0.2 requires official sources only.")
+        raise ResearchError("Official sources must control current eligibility.")
 
     client = OpenAI()
     selected_model = model or os.getenv("OPENAI_MODEL", "gpt-5.6")
-
     configured = resolve_known_school(school) if not roster_url else None
     preferred_roster_url = roster_url or (configured.roster_url if configured else "")
     resolution_method = (
-        "user-supplied roster URL"
-        if roster_url
-        else "built-in school registry"
-        if configured
+        "user-supplied roster URL" if roster_url
+        else "built-in school registry" if configured
         else "automatic web discovery"
     )
 
@@ -241,21 +336,16 @@ def research_school(
         model=selected_model,
         school=school,
         discipline=discipline,
+        discipline_variants=discipline_variants,
         roster_url=preferred_roster_url,
     )
-
-    # A saved registry URL may become stale or unreadable. In that case, try one
-    # automatic discovery pass rather than forcing the user to find a replacement.
-    if (
-        roster["roster_status"] == "incomplete"
-        and configured is not None
-        and not roster_url
-    ):
+    if roster["roster_status"] == "incomplete" and configured is not None and not roster_url:
         roster = discover_current_roster(
             client=client,
             model=selected_model,
             school=school,
             discipline=discipline,
+            discipline_variants=discipline_variants,
             roster_url="",
         )
         resolution_method = "automatic web discovery after registry fallback"
@@ -278,44 +368,38 @@ def research_school(
         model=selected_model,
         school=school,
         discipline=discipline,
+        discipline_variants=discipline_variants,
         included_rank=included_rank,
         exclusions=exclusions,
         roster=roster,
     )
-    prefix = f"Roster source selected by {resolution_method}."
     result["school_note"] = (
-        f"{prefix} {result['school_note']}".strip()
-    )
+        f"Roster source selected by {resolution_method}. {result['school_note']}"
+    ).strip()
+
+    if allow_personal_websites:
+        result = enrich_from_personal_websites(
+            client=client,
+            model=selected_model,
+            school=school,
+            result=result,
+        )
     return result
 
 
-def _validate_roster(
-    roster: dict[str, Any],
-    *,
-    requested_school: str,
-) -> None:
+def _validate_roster(roster: dict[str, Any], *, requested_school: str) -> None:
     required = {
-        "school_name",
-        "discipline",
-        "roster_source",
-        "roster_status",
-        "roster_note",
-        "roster_members",
+        "school_name", "discipline", "roster_source", "roster_status",
+        "roster_note", "roster_members",
     }
     missing = required.difference(roster)
     if missing:
         raise ResearchError(f"Roster fields missing: {sorted(missing)}")
-
     if roster["roster_status"] == "completed":
         if not roster["roster_source"]:
-            raise ResearchError(
-                f"{requested_school}: completed roster has no source URL."
-            )
+            raise ResearchError(f"{requested_school}: completed roster has no source URL.")
         if not roster["roster_members"]:
-            raise ResearchError(
-                f"{requested_school}: completed roster contains no members."
-            )
-
+            raise ResearchError(f"{requested_school}: completed roster contains no members.")
     names = [_normalized_name(m["name"]) for m in roster["roster_members"]]
     if len(names) != len(set(names)):
         raise ResearchError(f"{requested_school}: duplicate roster names found.")
@@ -329,37 +413,47 @@ def _validate_school_result(
 ) -> None:
     if not isinstance(result.get("faculty_classifications"), list):
         raise ResearchError("faculty_classifications must be a list.")
-
     roster_by_name = {
-        _normalized_name(member["name"]): member
-        for member in roster_members
+        _normalized_name(member["name"]): member for member in roster_members
     }
     output_names = [
         _normalized_name(person["candidate_name"])
         for person in result["faculty_classifications"]
     ]
-
     extras = sorted(set(output_names).difference(roster_by_name))
     missing = sorted(set(roster_by_name).difference(output_names))
-
     if extras:
         raise ResearchError(
-            f"{requested_school}: model added names outside the current roster: "
-            f"{extras}"
+            f"{requested_school}: model added names outside the current roster: {extras}"
         )
     if missing:
         raise ResearchError(
-            f"{requested_school}: model failed to classify roster members: "
-            f"{missing}"
+            f"{requested_school}: model failed to classify roster members: {missing}"
         )
     if len(output_names) != len(set(output_names)):
-        raise ResearchError(
-            f"{requested_school}: duplicate faculty classifications found."
-        )
-
+        raise ResearchError(f"{requested_school}: duplicate faculty classifications found.")
     for person in result["faculty_classifications"]:
         if person["decision"] == "included" and not person["current_source"]:
             raise ResearchError(
-                f"{requested_school}: included candidate "
-                f"{person['candidate_name']} has no current official source."
+                f"{requested_school}: included candidate {person['candidate_name']} "
+                "has no current official source."
             )
+
+
+def _validate_supplemental(
+    supplemental: dict[str, Any],
+    included: list[dict[str, Any]],
+) -> None:
+    records = supplemental.get("supplemental_records")
+    if not isinstance(records, list):
+        raise ResearchError("supplemental_records must be a list.")
+    expected = {_normalized_name(p["candidate_name"]) for p in included}
+    actual = [_normalized_name(r["candidate_name"]) for r in records]
+    extras = sorted(set(actual).difference(expected))
+    missing = sorted(expected.difference(actual))
+    if extras:
+        raise ResearchError(f"Personal-site enrichment added unknown candidates: {extras}")
+    if missing:
+        raise ResearchError(f"Personal-site enrichment omitted candidates: {missing}")
+    if len(actual) != len(set(actual)):
+        raise ResearchError("Personal-site enrichment returned duplicate candidates.")
