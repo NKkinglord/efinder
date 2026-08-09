@@ -5,7 +5,12 @@ from school_registry import (
     REGISTRY_SCHOOL_COUNT,
     resolve_known_school,
 )
-from utils import discipline_labels, safe_search_domains
+from utils import (
+    discipline_labels,
+    parse_discipline_variants,
+    resolve_rank_search_rules,
+    safe_search_domains,
+)
 
 
 def main():
@@ -69,6 +74,47 @@ def main():
 
     labels = discipline_labels("Accounting", ["Accountancy", " accounting ", ""])
     assert labels == ["Accounting", "Accountancy"]
+
+    variants = parse_discipline_variants(
+        "Operations, Decision, Supply Chain, Management Science, operations"
+    )
+    assert variants == [
+        "Operations", "Decision", "Supply Chain", "Management Science"
+    ]
+    # Comma is the documented delimiter; semicolon is not silently interpreted.
+    assert parse_discipline_variants("Operations; Decision") == ["Operations; Decision"]
+
+    canonical_ranks, automatic, effective = resolve_rank_search_rules(
+        "Professor", ["Visiting", "Clinical / Clinic"]
+    )
+    assert canonical_ranks == ["Full Professor"]
+    assert automatic == ["Assistant Professor", "Associate Professor"]
+    assert effective == [
+        "Visiting", "Clinical / Clinic", "Assistant Professor", "Associate Professor"
+    ]
+
+    canonical_ranks, automatic, effective = resolve_rank_search_rules(
+        "Professor, Associate Professor", ["Visiting"]
+    )
+    assert canonical_ranks == ["Full Professor", "Associate Professor"]
+    assert automatic == ["Assistant Professor"]
+    assert effective == ["Visiting", "Assistant Professor"]
+
+    canonical_ranks, automatic, effective = resolve_rank_search_rules(
+        "Professor, Associate Professor, Assistant Professor", ["Visiting"]
+    )
+    assert canonical_ranks == [
+        "Full Professor", "Associate Professor", "Assistant Professor"
+    ]
+    assert automatic == []
+    assert effective == ["Visiting"]
+
+    canonical_ranks, automatic, effective = resolve_rank_search_rules(
+        "Associate Professor, Assistant Professor", ["Visiting"]
+    )
+    assert canonical_ranks == ["Associate Professor", "Assistant Professor"]
+    assert automatic == []
+    assert effective == ["Visiting"]
 
     # International public-suffix safety.
     assert "ac.uk" not in safe_search_domains("https://www.jbs.cam.ac.uk/faculty/")

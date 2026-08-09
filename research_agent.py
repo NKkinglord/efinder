@@ -18,7 +18,7 @@ from schemas import (
     SUPPLEMENTAL_RESULT_SCHEMA,
 )
 from school_registry import resolve_known_school
-from utils import discipline_labels, safe_search_domains
+from utils import discipline_labels, resolve_rank_search_rules, safe_search_domains
 
 
 class ResearchError(RuntimeError):
@@ -65,14 +65,16 @@ def discover_current_roster(
     request = f"""
 School: {school}
 Primary discipline/area: {discipline}
-Accepted discipline-name labels: {json.dumps(labels, ensure_ascii=False)}
+Accepted discipline keywords/phrases: {json.dumps(labels, ensure_ascii=False)}
 
 {exact_url_instruction}
 
-Treat the accepted labels as equivalent names for roster discovery. Extract
-only names visibly presented as current faculty on this one official source
-under one of those labels. A full-school directory is acceptable only when it
-visibly labels each selected person with one of the accepted labels.
+Treat each accepted item as a case-insensitive keyword or phrase. An official
+discipline/area label qualifies when it contains the primary discipline or any
+of the supplied variant terms. Extract only names visibly presented as current
+faculty on this one official source under a qualifying label. A full-school
+directory is acceptable only when it visibly labels each selected person with a
+qualifying discipline/area label.
 
 If the source does not expose both names and discipline labels to the web tool,
 return incomplete.
@@ -134,12 +136,19 @@ def verify_roster(
         for member in roster_members
     ]
     labels = discipline_labels(discipline, discipline_variants)
+    canonical_ranks, automatic_rank_exclusions, effective_exclusions = resolve_rank_search_rules(
+        included_rank, exclusions
+    )
+    if not canonical_ranks:
+        raise ResearchError("At least one included rank is required.")
     request = f"""
 School: {school}
 Primary discipline/area: {discipline}
-Accepted discipline-name labels: {json.dumps(labels, ensure_ascii=False)}
-Included rank: {included_rank}
-Excluded appointment types/titles: {", ".join(exclusions) if exclusions else "None"}
+Accepted discipline keywords/phrases: {json.dumps(labels, ensure_ascii=False)}
+Rank(s) entered by user: {included_rank}
+Effective included ranks (OR logic): {json.dumps(canonical_ranks, ensure_ascii=False)}
+Automatic rank exclusions: {", ".join(automatic_rank_exclusions) if automatic_rank_exclusions else "None"}
+Effective excluded appointment types/titles: {", ".join(effective_exclusions) if effective_exclusions else "None"}
 Exact current roster source: {roster["roster_source"]}
 
 CLOSED CURRENT ROSTER:
@@ -147,6 +156,10 @@ CLOSED CURRENT ROSTER:
 
 Classify every supplied name exactly once. Do not add any other name.
 Use official university/school sources only in this stage.
+For discipline eligibility, a current official area label qualifies when it
+case-insensitively contains the primary discipline or any supplied variant term.
+For rank eligibility, include a candidate when the verified current rank matches ANY
+of the effective included ranks, then apply all effective exclusions above.
 Standardize the discipline output to exactly: {discipline}
 """
     allowed_domains = _domain_filters(roster["roster_source"], official_domains)
@@ -182,6 +195,7 @@ Standardize the discipline output to exactly: {discipline}
     )
     result = _parse_json_response(response, stage="Candidate verification")
     result["roster_source"] = roster["roster_source"]
+    _apply_rank_guardrails(result, canonical_ranks=canonical_ranks)
     _validate_school_result(
         result,
         requested_school=school,
@@ -405,6 +419,57 @@ def research_school(
         )
     return result
 
+
+
+def _standard_professor_rank(current_rank: str) -> str | None:
+    """Return one of the three standard professor ranks when title text is clear."""
+    rank_key = " ".join(str(current_rank).casefold().split())
+    if "assistant professor" in rank_key:
+        return "Assistant Professor"
+    if "associate professor" in rank_key:
+        return "Associate Professor"
+
+    # Avoid treating clearly non-standard appointment types as Full Professor.
+    nonstandard = (
+        "professor of practice",
+        "clinical professor",
+        "research professor",
+        "visiting professor",
+        "teaching professor",
+        "adjunct professor",
+        "emeritus professor",
+        "emerita professor",
+    )
+    if "professor" in rank_key and not any(term in rank_key for term in nonstandard):
+        return "Full Professor"
+    return None
+
+
+def _apply_rank_guardrails(
+    result: dict[str, Any],
+    *,
+    canonical_ranks: list[str],
+) -> None:
+    """Prevent obvious inclusion of a standard professor rank not requested."""
+    requested = {rank.casefold() for rank in canonical_ranks}
+
+    for person in result.get("faculty_classifications", []):
+        if person.get("decision") != "included":
+            continue
+        standard_rank = _standard_professor_rank(person.get("current_rank", ""))
+        if standard_rank is None or standard_rank.casefold() in requested:
+            continue
+
+        person["decision"] = "excluded"
+        person["exclusion_or_review_reason"] = (
+            f"Rank guardrail: verified current rank is {standard_rank}, which was "
+            "not one of the requested ranks."
+        )
+        guardrail_note = (
+            "Python rank guardrail changed an included classification to excluded "
+            "because its verified standard professor rank was not requested."
+        )
+        person["notes"] = f"{person.get('notes', '')} {guardrail_note}".strip()
 
 def _validate_roster(roster: dict[str, Any], *, requested_school: str) -> None:
     required = {

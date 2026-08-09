@@ -265,3 +265,32 @@ is stale, it can perform one final strict official-source discovery pass.
 Saved roster URLs can now be discipline-specific. For example, an Accounting page
 is used for Accounting/Accountancy, but not incorrectly reused for Operations or
 Finance.
+
+## Version 0.5.1: discipline keywords and Full Professor rank semantics
+
+- **Discipline variants / keywords** now use **commas** as the documented separator.
+  Each comma-separated item is treated as a case-insensitive keyword or phrase that
+  may appear inside a broader official discipline/area label.
+- Example: for `Operations Management`, entering
+  `Operations, Decision, Supply Chain, Management Science` allows official labels
+  such as `Technology and Operations Management` or `Decision Sciences` to qualify.
+- The tool does not invent related disciplines beyond the primary discipline and
+  the variants/keywords entered by the user.
+- Entering **Professor** or **Full Professor** now means **Full Professor**.
+  `Assistant Professor` and `Associate Professor` are automatically added to the
+  effective exclusions for that search, even though the official Full Professor
+  title may simply be displayed as `Professor`.
+- Named/endowed titles that contain `Professor` may still qualify as Full Professor
+  unless another exclusion applies.
+- The Excel **Run Configuration** sheet records the entered rank, effective rank,
+  automatic rank exclusions, and effective exclusions used for the run.
+
+
+## v0.5.2: multi-rank search and retained Variants field
+
+- The interface field remains **Variants**. Enter comma-separated discipline keywords/phrases such as `Operations, Decision, Supply Chain, Management Science`. Matching uses case-insensitive OR/contains logic against official discipline/area labels.
+- **Rank(s) to include** now accepts comma-separated ranks. Example: `Professor, Associate Professor, Assistant Professor`.
+- `Professor` and `Full Professor` both mean the Full Professor rank.
+- Requested ranks are combined with OR logic.
+- When Full Professor is requested, Assistant/Associate Professor are automatically excluded only if those ranks were not also explicitly requested.
+- A Python guardrail prevents an obvious standard Professor/Associate Professor/Assistant Professor rank from remaining included when that rank was not requested.

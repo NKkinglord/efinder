@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import inspect
-import re
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -12,6 +11,7 @@ from research_agent import ResearchError, research_school
 from school_input import parse_csv_schools, parse_pasted_schools
 from version import APP_VERSION
 from school_registry import RANKED_SCHOOL_COUNT, REGISTRY_SCHOOL_COUNT
+from utils import parse_discipline_variants, resolve_rank_search_rules
 
 
 load_dotenv()
@@ -40,17 +40,12 @@ DEFAULT_EXCLUSIONS = [
     "Educator Track",
 ]
 
+EXCLUSION_OPTIONS = [
+    *DEFAULT_EXCLUSIONS,
+    "Assistant Professor",
+    "Associate Professor",
+]
 
-def parse_variants(value: str) -> list[str]:
-    parts = re.split(r"[,;\n]+", value)
-    seen = set()
-    output = []
-    for part in parts:
-        cleaned = " ".join(part.strip().split())
-        if cleaned and cleaned.casefold() not in seen:
-            seen.add(cleaned.casefold())
-            output.append(cleaned)
-    return output
 
 
 st.set_page_config(
@@ -72,15 +67,29 @@ with st.form("research_form"):
     with left:
         discipline = st.text_input("Discipline or academic area", value="Accounting")
         variants_text = st.text_input(
-            "Variants of name",
+            "Variants",
             value="Accountancy",
             help=(
-                "Comma-separated equivalent area names. Examples: Accountancy; "
-                "Decision and Operations. Only the names you enter here are treated "
-                "as equivalent to the primary discipline."
+                "Enter additional discipline keywords or phrases separated by commas. "
+                "Each item is matched case-insensitively within the official discipline/area label."
             ),
         )
-        included_rank = st.text_input("Rank to include", value="Associate Professor")
+        st.caption(
+            "Separate multiple variants with commas. Example: "
+            "Operations, Decision, Supply Chain, Management Science"
+        )
+        included_rank = st.text_input(
+            "Rank(s) to include",
+            value="Associate Professor",
+            help=(
+                "Enter one or more faculty ranks separated by commas. Professor means "
+                "Full Professor. Multiple requested ranks are combined with OR logic."
+            ),
+        )
+        st.caption(
+            "Separate multiple ranks with commas. Professor = Full Professor. Example: "
+            "Professor, Associate Professor, Assistant Professor"
+        )
         current_only = st.checkbox("Current faculty only", value=True)
         official_only = st.checkbox(
             "Official sources control current eligibility",
@@ -94,9 +103,14 @@ with st.form("research_form"):
 
     with right:
         exclusions = st.multiselect(
-            "Excluded appointment types",
-            DEFAULT_EXCLUSIONS,
+            "Excluded appointment types / title terms",
+            EXCLUSION_OPTIONS,
             default=DEFAULT_EXCLUSIONS,
+            help=(
+                "Additional exclusions for the search. For a Full Professor search, "
+                "Assistant/Associate Professor are automatically excluded only when "
+                "those ranks were not explicitly requested in Rank(s) to include."
+            ),
         )
         allow_personal_websites = st.checkbox(
             "Search personal academic websites for missing details",
@@ -145,7 +159,13 @@ if submitted:
         st.error("OPENAI_API_KEY is missing. Add it to the .env file before running.")
         st.stop()
 
-    discipline_variants = parse_variants(variants_text)
+    discipline_variants = parse_discipline_variants(variants_text)
+    canonical_ranks, automatic_rank_exclusions, effective_exclusions = resolve_rank_search_rules(
+        included_rank, exclusions
+    )
+    if not canonical_ranks:
+        st.error("Enter at least one rank to include.")
+        st.stop()
     records = []
     if uploaded is not None:
         records.extend(parse_csv_schools(uploaded))
@@ -202,8 +222,11 @@ if submitted:
     if results:
         configuration = {
             "Discipline": discipline,
-            "Variants of name": discipline_variants,
-            "Included rank": included_rank,
+            "Variants": discipline_variants,
+            "Rank(s) entered": included_rank,
+            "Effective included ranks": canonical_ranks,
+            "Automatic rank exclusions": automatic_rank_exclusions,
+            "Effective exclusions": effective_exclusions,
             "Current faculty only": current_only,
             "Official sources control eligibility": official_only,
             "Personal academic website enrichment": allow_personal_websites,
